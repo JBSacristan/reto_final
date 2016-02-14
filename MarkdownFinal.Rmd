@@ -1,0 +1,116 @@
+---
+title: "Script Para Modelado Distribución Enebrales"
+output: html_document
+---
+
+``` {r}
+#Establecer directorio de trabajo
+setwd(ruta_directorio_trabajo_determinada)
+
+#Cargado de paquetes necesarios para el trabajo
+library(Kendall)  
+library(wq)       
+library(ggplot2)  
+library(reshape2) 
+library(zoo)      
+library(dismo)
+library(HH)
+library(party)
+library(plotmo)
+library(randomForest)
+library(rgdal)
+library(tree)
+
+#Lectura de la tabla de datos (a partir de la consulta SQL de Access)
+nieve_aniohidro <- read.csv("~/Downloads/nieve_aniohidro.csv")
+
+#Manipulación de los datos.
+nieve <- dcast(nieve_aniohidro, anio_hidrologico ~ malla_punto_id, value.var = 'CuentaDesnow')   
+names(nieve) <- c('pixel','2001','2002','2003','2004', '2005', '2006', '2007', '2008')
+
+#Obtención de objeto zoo para trabajar con este paquete
+minieve <- zoo(nieve[-1], nieve[,1])
+
+#Eliminación de los valores nulos. Transformar valores nulos en 0.
+minieve[is.na(minieve)] <- 0
+
+#Análisis de tendencia del año hidrológico.
+tendencia <- data.frame(mannKen(as.ts(minieve)))
+
+#Ahora tendríamos el análisis de la tendencia de nieve por píxel.
+#Tendríamos que "joinearlo" con la malla MODIS para tener una variable más.
+
+#Segunda parte del trabajo. Predicción de modelos.
+
+#Creación de una lista con las variables que se manejan. Todos los archivos deben tener la misma extensión.
+lista_variables <- list.files(path="ruta_variables", pattern='*.asc', full.names=TRUE)
+
+#Creación de un único ráster con las variables manejadas.
+variables <- brick(stack(lista_variables))
+
+#Creación de máscara de Sierra Nevada. Hemos tenido que cambiarle de .shp a .asc
+r<-raster("nombre_de_máscara.asc")
+variables2<-crop(variables, r)
+
+#Análisis de correlación de las variables predictoras
+
+#Transformación de las variables en un data frame
+variables_tabla<- as.data.frame(variables)
+
+#Eliminación de valores nulos
+variables_tabla<-na.omit(variables_tabla)
+
+#Creación de matriz de correlación de las variables
+variables_correlacion<-cor(variables_tabla)
+
+#Matriz de distancias a partir de la de correlaciones
+variables_dist<-abs(as.dist(variables_correlacion))
+
+#Creación de cluster con las variables y representación del mismo
+variables_cluster<-hclust(1-variables_dist)
+plot(variables_cluster)
+
+#En función de las correlaciones, seleccionamos las más adecuadas en cada modelo.
+#Menor distancia implica mayor correlación.
+variables_tabla2<-data.frame(variables_del_cluster)
+names(variables_tabla2)<-c(nombres_columnas_dataframe)
+
+#Importación y modificación de registros de presencia de enebrales
+presencia_utm <-read.table("ruta_archivo_presencia_enebrales",header=T, sep=';')
+
+#Proyección adecuada del registro de presencia de enebrales
+presencia_utm_f <- SpatialPoints(cbind(presencia_utm$UTM_X_GPS,presencia_utm$UTM_Y_GPS), 
+                                 proj4string=CRS("+proj=utm +zone=30"))
+presencia_geo <- as.data.frame(spTransform(presencia_utm_f, CRS("+proj=longlat")))
+
+#Importación y modificación de registros de ausencia de enebrales
+ausencia_utm<-read.table("ruta_archivo_ausencia_enebrales",header=T, sep=';')
+
+#Proyección adecuada del registro de ausencias
+ausencia_utm_f <- SpatialPoints(cbind(ausencia_utm$UTM_X_GPS,ausencia_utm$UTM_Y_GPS), 
+                                proj4string=CRS("+proj=utm +zone=30"))
+ausencia_geo <- as.data.frame(spTransform(ausencia_utm_f, CRS("+proj=longlat")))
+
+#Extracción de los valores de presencia/ausencia y su inclusión en una tabla
+presencia_variables<- data.frame(extract(variables, presencia_geo))
+presencia_variables$respuesta <- rep(1, nrow(presencia_variables))
+ausencia_variables<- data.frame(extract(variables, ausencia_geo))
+ausencia_variables$respuesta <- rep(0, nrow(ausencia_variables))
+tabla_completa<-rbind(ausencia_variables, presencia_variables)
+tabla_completa<-na.omit(tabla_completa)
+
+#Selección de las variables más adecuadas para el modelo en función de los datos de presencia/ausencia
+m1<-glm(respuesta ~.,data=tabla_completa)
+tabla_modelo <-tabla_completa[,c('huella_humana','PA','PV','topo_posic','respuesta')]
+m2<-glm(respuesta~., data=tabla_modelo)
+
+#Aplicación del modelo calculado a las variables
+p<-predict(variables2, m2)
+plot(p)
+
+#Generación del mapa en formato .asc
+p_raster<-raster(p)
+writeRaster(p, "nombre_mapa_final.asc", overwrite=TRUE)
+```
+
+
